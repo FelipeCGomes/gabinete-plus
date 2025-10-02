@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="/css/styles.css" />
+    <title>Setup – Gabinete+</title>
+</head>
+
+<body>
+    <div id="navbar"></div>
+    <div class="container">
+        <h2>Configuração inicial</h2>
+
+        <!-- Completar convite -->
+        <section id="completeInvite" class="card" style="display:none">
+            <h3>Concluir cadastro (convite)</h3>
+            <form id="formCompleteInvite" class="grid cols-2">
+                <input class="input" name="first_name" placeholder="Nome" required>
+                <input class="input" name="last_name" placeholder="Sobrenome" required>
+                <input class="input" name="phone" placeholder="Telefone (somente números)" required>
+                <input class="input" type="password" name="password" placeholder="Crie uma senha" required>
+                <input class="input" name="cep" placeholder="CEP">
+                <input class="input" name="city" placeholder="Cidade">
+                <select class="select" name="ra_id">
+                    <option value="">Selecione R.A</option>
+                </select>
+                <div><button class="btn">Concluir</button></div>
+            </form>
+        </section>
+
+        <!-- Setup DB + Aparência -->
+        <section id="setupDB" class="grid cols-2">
+            <form id="formSetup" class="card">
+                <h3>Banco de Dados</h3>
+                <label>Tipo
+                    <select id="db_type" name="db_type" class="select">
+                        <option value="mysql">MySQL</option>
+                        <option value="postgres">PostgreSQL</option>
+                    </select>
+                </label>
+                <input class="input" name="host" placeholder="Host/IP" required>
+                <div class="grid cols-2">
+                    <input class="input" name="port" placeholder="Porta (3306/5432)">
+                    <input class="input" name="database" placeholder="Database" required>
+                </div>
+                <div class="grid cols-2">
+                    <input class="input" name="user" placeholder="Usuário" required>
+                    <input class="input" type="password" name="password" placeholder="Senha" required>
+                </div>
+                <label><input type="checkbox" name="ssl"> SSL</label>
+
+                <h3>Aparência do Login</h3>
+                <label>Foto do candidato (aparece no login)
+                    <input type="file" id="candidate_photo" name="candidate_photo" accept="image/*">
+                </label>
+                <label>Fundo do login (imagem ou vídeo curto)
+                    <input type="file" id="login_bg" name="login_bg" accept="image/*,video/*">
+                </label>
+                <div class="grid cols-3">
+                    <select class="select" name="login_bg_type">
+                        <option value="image">Imagem</option>
+                        <option value="video">Vídeo</option>
+                    </select>
+                    <input class="input" name="login_bg_blur" type="number" placeholder="Blur px (0-20)" value="2">
+                    <input class="input" name="login_bg_brightness" type="number" placeholder="Brilho (%)" value="100">
+                </div>
+
+                <h3>Cores</h3>
+                <div class="grid cols-3">
+                    <input class="input" name="site_name" placeholder="Nome do site" value="Gabinete+">
+                    <input class="input" name="brand_primary" type="color" value="#0b2240">
+                    <input class="input" name="brand_secondary" type="color" value="#1e3a8a">
+                    <input class="input" name="brand_accent" type="color" value="#b7c9d3">
+                </div>
+                <h4>Mapa de calor</h4>
+                <div class="grid cols-3">
+                    <label>Baixo <input class="input" name="heat_low" type="color" value="#dc3545"></label>
+                    <label>Médio <input class="input" name="heat_mid" type="color" value="#fd7e14"></label>
+                    <label>Alto <input class="input" name="heat_high" type="color" value="#0d6efd"></label>
+                </div>
+
+                <label>Sobre (página "Sobre")<textarea class="textarea" name="about_text" rows="4"></textarea></label>
+                <button class="btn" id="btnSetup">Salvar & Criar Tabelas</button>
+            </form>
+
+            <form id="formAdminMaster" class="card" style="display:none">
+                <h3>Criar Admin Master</h3>
+                <input class="input" name="phone" placeholder="Telefone (somente números)" required>
+                <input class="input" name="cpf" placeholder="CPF" required>
+                <input class="input" type="password" name="password" placeholder="Senha" required>
+                <button class="btn" id="btnAdminMaster">Criar Admin Master</button>
+            </form>
+        </section>
+    </div>
+
+    <script src="/js/app.js"></script>
+    <script src="/js/pages/setup.js"></script>
+</body>
+
+</html>

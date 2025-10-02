@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="/css/styles.css" />
+    <title>Fale Conosco – Gabinete+</title>
+</head>
+
+<body>
+    <div id="navbar"></div>
+    <div class="container">
+        <div class="card center-hero">
+            <img src="/assets/icon.png" alt="Foto">
+            <h2>Fale Conosco</h2>
+            <p>Preencha o formulário abaixo e entraremos em contato.</p>
+        </div>
+        <div class="card">
+            <form id="formContact" class="grid cols-3">
+                <input class="input" name="name" placeholder="Nome completo" required>
+                <input class="input" name="phone" placeholder="Telefone">
+                <input class="input" type="email" name="email" placeholder="E-mail">
+                <input class="input" name="city" placeholder="Cidade">
+                <input class="input" name="uf" placeholder="UF" maxlength="2">
+                <textarea class="textarea" name="message" rows="4" placeholder="Mensagem" required></textarea>
+                <div><button class="btn">Enviar</button></div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/js/app.js"></script>
+    <script src="/js/pages/contact.js"></script>
+</body>
+
+</html>

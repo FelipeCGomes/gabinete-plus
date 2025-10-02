@@ -1,0 +1,26 @@
+{
+  "name": "Gabinete+",
+  "short_name": "Gabinete+",
+  "start_url": "/home.html",
+  "display": "standalone",
+  "background_color": "#0b2240",
+  "theme_color": "#0b2240",
+  "icons": [
+    {
+      "src": "/assets/icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

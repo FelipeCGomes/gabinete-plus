@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="/css/styles.css" />
+    <title>Perfil – Gabinete+</title>
+</head>
+
+<body>
+    <div id="navbar"></div>
+    <div class="container grid cols-2">
+        <section class="card">
+            <h3>Seu Perfil</h3>
+            <div style="display:flex;gap:18px;align-items:flex-start">
+                <img id="avatarImg" src="/assets/icon.png"
+                    style="width:120px;height:120px;border-radius:12px;object-fit:cover;border:2px solid rgba(255,255,255,.2)">
+                <div>
+                    <div class="cropper" id="cropper"></div>
+                    <div class="crop-controls">
+                        <input type="range" id="zoomRange" min="0.5" max="2.5" step="0.05" value="1" />
+                        <input type="file" id="avatarFile" accept="image/*">
+                    </div>
+                </div>
+            </div>
+            <form id="formProfile" class="grid cols-2" style="margin-top:12px">
+                <input class="input" name="first_name" placeholder="Nome">
+                <input class="input" name="last_name" placeholder="Sobrenome">
+                <input class="input" name="address" placeholder="Endereço">
+                <input class="input" name="cep" placeholder="CEP">
+                <input class="input" name="city" placeholder="Cidade">
+                <select class="select" name="ra_id">
+                    <option value="">Selecione R.A</option>
+                </select>
+                <div class="card">Indicado por: <b id="inviterName">—</b></div>
+                <div><button class="btn">Salvar</button></div>
+            </form>
+        </section>
+        <aside class="card">
+            <b>Exportar / Importar (.txt)</b>
+            <div style="opacity:.7">Visível apenas para Administradores.</div>
+            <div style="display:flex;gap:10px;margin-top:10px">
+                <a class="btn" href="/admin-users.html">Ir para gestão de usuários</a>
+            </div>
+        </aside>
+    </div>
+
+    <script src="/js/app.js"></script>
+    <script src="/js/pages/profile.js"></script>
+</body>
+
+</html>

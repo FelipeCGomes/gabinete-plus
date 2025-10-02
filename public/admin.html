@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="/css/styles.css" />
+    <title>Admin – Gabinete+</title>
+</head>
+
+<body>
+    <div id="navbar"></div>
+    <div class="container grid cols-2">
+        <section class="card">
+            <h3>Configurações do Site</h3>
+            <form id="formSettings" class="grid cols-2">
+                <input class="input" id="site_name" placeholder="Nome do site">
+                <label>Primária <input class="input" type="color" id="brand_primary"></label>
+                <label>Secundária <input class="input" type="color" id="brand_secondary"></label>
+                <label>Acento <input class="input" type="color" id="brand_accent"></label>
+
+                <label>Mapa: Baixo <input class="input" type="color" id="heat_low"></label>
+                <label>Mapa: Médio <input class="input" type="color" id="heat_mid"></label>
+                <label>Mapa: Alto <input class="input" type="color" id="heat_high"></label>
+
+                <input class="input" id="candidate_url" placeholder="URL da foto do candidato (opcional)">
+                <label>Sobre<textarea class="textarea" id="about_text" rows="4"></textarea></label>
+
+                <div><button class="btn" id="btnSaveSettings" type="button">Salvar</button></div>
+            </form>
+        </section>
+
+        <aside class="grid">
+            <div class="card">
+                <h4>R.A / Áreas</h4>
+                <ul id="raList"></ul>
+                <button class="btn" id="btnAddRA">Adicionar</button>
+            </div>
+            <div class="card">
+                <h4>Banners (home)</h4>
+                <input type="file" id="bannerFile" accept="image/*">
+                <div id="bannersWrap" class="grid"></div>
+            </div>
+        </aside>
+    </div>
+
+    <script src="/js/app.js"></script>
+    <script src="/js/pages/admin.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="/css/styles.css" />
+    <title>Entrar – Gabinete+</title>
+</head>
+
+<body>
+    <div class="login-wrap">
+        <div class="login-panel shadow">
+            <div class="login-header">
+                <img id="candidatePhoto" src="/assets/icon.png" alt="Candidato">
+                <div style="font-size:20px;font-weight:800">Bem-vindo</div>
+                <div style="opacity:.8">Faça login para continuar</div>
+            </div>
+            <div class="login-body">
+                <div id="inviteBox" class="card" style="display:none">
+                    Convite para <b></b>. Clique para concluir o cadastro:
+                    <button class="btn" id="btnCompleteInvite">Concluir</button>
+                </div>
+                <form id="formLogin" class="grid" autocomplete="on">
+                    <input class="input" name="phone" placeholder="Telefone (somente números)" required>
+                    <input class="input" type="password" name="password" placeholder="Senha" required>
+                    <button class="btn" id="btnLogin">Entrar</button>
+                    <small style="opacity:.7">Dica: Admin Master é criado em <a href="/setup.html">/setup.html</a> no
+                        primeiro uso.</small>
+                </form>
+            </div>
+        </div>
+    </div>
+    <script src="/js/app.js"></script>
+    <script src="/js/pages/login.js"></script>
+</body>
+
+</html>
