@@ -44,3 +44,6 @@ export async function query(sql, params = []) {
 export const isPg = () => dbType.startsWith('post');
 export const isMy = () => !isPg();
 export const now = () => Date.now();
+
+/** Retorna true se o pool foi inicializado */
+export function isDBReady() { return !!pool; }

@@ -18,17 +18,36 @@ async function api(path, { method = 'GET', body, form = false } = {}) {
     const headers = {};
     if (!form) headers['Content-Type'] = 'application/json';
     if (GP.token) headers['Authorization'] = 'Bearer ' + GP.token;
+
     const res = await fetch(path, {
         method,
         headers,
         body: form ? body : (body ? JSON.stringify(body) : undefined)
     });
+
+    // auth expirou
     if (res.status === 401) {
         localStorage.removeItem('gp_token');
         if (!location.pathname.endsWith('/login.html')) location.href = '/login.html';
         throw new Error('auth');
     }
-    if (!res.ok) throw new Error(await res.text());
+
+    // *** NOVO: DB ainda não configurado → redireciona para /setup.html ***
+    if (res.status === 503) {
+        // tenta ler o body para saber se é setup_required (não é obrigatório)
+        let j = null; try { j = await res.json(); } catch { }
+        if (j?.error === 'setup_required') {
+            if (!location.pathname.endsWith('/setup.html')) location.href = '/setup.html';
+            throw new Error('setup_required');
+        }
+    }
+
+    if (!res.ok) {
+        // tenta devolver texto legível
+        const ct = res.headers.get('content-type') || '';
+        throw new Error(ct.includes('application/json') ? JSON.stringify(await res.json()) : await res.text());
+    }
+
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) return res.json();
     return res.text();
@@ -115,7 +134,6 @@ function renderNavbar(activePath) {
 // Socket.io + presença
 function startRealtime() {
     if (GP.socket) return;
-    // socket.io client é servido em /socket.io/socket.io.js pelo backend
     const s = document.createElement('script');
     s.src = '/socket.io/socket.io.js';
     s.onload = () => {
@@ -137,7 +155,6 @@ function startRealtime() {
     };
     document.body.appendChild(s);
 
-    // ping presença (se logado)
     if (GP.token) {
         setInterval(() => api('/api/presence', { method: 'POST' }).catch(() => { }), 15000);
     }
@@ -147,7 +164,6 @@ function startRealtime() {
 async function initPush() {
     if (!('serviceWorker' in navigator)) return;
     await navigator.serviceWorker.ready;
-    // navegador pedirá permissão quando necessário (manual)
 }
 
 // PWA SW

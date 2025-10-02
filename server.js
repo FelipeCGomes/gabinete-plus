@@ -9,7 +9,7 @@ import multer from 'multer';
 import { Server as IOServer } from 'socket.io';
 import webpush from 'web-push';
 import { v4 as uuidv4 } from 'uuid';
-import { initDB, query, now, isPg } from './db.js';
+import { initDB, query, now, isPg, isDBReady } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -19,9 +19,13 @@ const io = new IOServer(http, { cors: { origin: '*' } });
 app.use(cors());
 app.use(express.json({ limit: '12mb' }));
 app.use(express.urlencoded({ extended: true }));
+
 if (!fs.existsSync(path.join(__dirname, 'uploads'))) fs.mkdirSync(path.join(__dirname, 'uploads'));
 const upload = multer({ dest: path.join(__dirname, 'uploads') });
+
+// estáticos
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false, cacheControl: false }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { etag: false, cacheControl: false }));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
 const CONFIG_PATH = path.join(__dirname, 'config.json');
@@ -30,11 +34,19 @@ const CONFIG_PATH = path.join(__dirname, 'config.json');
 function readConfig() {
     const defaults = {
         db: {
-            type: 'mysql', host: process.env.MYSQL_HOST, port: +(process.env.MYSQL_PORT || 3306),
-            user: process.env.MYSQL_USER, password: process.env.MYSQL_PASSWORD,
-            database: process.env.MYSQL_DATABASE, ssl: !!(+process.env.MYSQL_SSL || 0)
+            type: process.env.POSTGRES_HOST || process.env.POSTGRES_DATABASE || process.env.POSTGRES_USER ? 'postgres' : 'mysql',
+            host: process.env.POSTGRES_HOST || process.env.MYSQL_HOST,
+            port: +(process.env.POSTGRES_PORT || process.env.MYSQL_PORT || 0),
+            user: process.env.POSTGRES_USER || process.env.MYSQL_USER,
+            password: process.env.POSTGRES_PASSWORD || process.env.MYSQL_PASSWORD,
+            database: process.env.POSTGRES_DATABASE || process.env.MYSQL_DATABASE,
+            ssl: !!(+process.env.POSTGRES_SSL || +process.env.MYSQL_SSL || 0)
         },
-        vapid: { publicKey: process.env.VAPID_PUBLIC_KEY || '', privateKey: process.env.VAPID_PRIVATE_KEY || '', subject: process.env.VAPID_SUBJECT || 'mailto:you@example.com' }
+        vapid: {
+            publicKey: process.env.VAPID_PUBLIC_KEY || '',
+            privateKey: process.env.VAPID_PRIVATE_KEY || '',
+            subject: process.env.VAPID_SUBJECT || 'mailto:you@example.com'
+        }
     };
     try {
         if (!fs.existsSync(CONFIG_PATH)) return defaults;
@@ -48,7 +60,11 @@ function readConfig() {
 }
 function writeConfig(c) { fs.writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2)); }
 const CONFIG = readConfig();
-if (CONFIG.db?.host) initDB(CONFIG.db);
+
+// inicializa DB automaticamente se houver credenciais (ENV ou config.json)
+if (CONFIG.db?.host && CONFIG.db?.user && CONFIG.db?.database) {
+    try { initDB(CONFIG.db); } catch (e) { console.error('Falha initDB', e.message); }
+}
 
 // web push
 function initWebPush() {
@@ -65,6 +81,13 @@ function auth(req, res, next) {
     try { req.user = jwt.verify(t, JWT_SECRET); next(); }
     catch (e) { return res.status(401).json({ error: 'bad_token' }); }
 }
+
+// guarda para rotas que EXIGEM DB
+function ensureDB(req, res, next) {
+    if (!isDBReady()) return res.status(503).json({ error: 'setup_required' });
+    next();
+}
+
 const BADWORDS = ['palavrao1', 'palavrao2', 'idiota', 'burro'];
 function hasOffense(text = '') {
     const txt = (text || '').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
@@ -113,15 +136,16 @@ app.post('/api/setup', upload.fields([{ name: 'candidate_photo' }, { name: 'logi
         const bgFile = req.files?.login_bg?.[0];
 
         const cfg = {
-            db: { type: db_type, host, port: +(port || (db_type.startsWith('post') ? 5432 : 3306)), user, password, database, ssl: !!(ssl === 'on' || ssl === 'true' || ssl === '1') },
+            db: { type: db_type, host, port: +(port || (db_type?.startsWith('post') ? 5432 : 3306)), user, password, database, ssl: !!(ssl === 'on' || ssl === 'true' || ssl === '1') },
             vapid: readConfig().vapid
         };
         writeConfig(cfg);
         initDB(cfg.db);
 
-        const script = db_type.startsWith('post') ?
+        const script = db_type?.startsWith('post') ?
             fs.readFileSync(path.join(__dirname, 'schema.pg.sql'), 'utf-8') :
             fs.readFileSync(path.join(__dirname, 'schema.mysql.sql'), 'utf-8');
+
         for (const stmt of script.split(/;[\r\n]+/).map(s => s.trim()).filter(Boolean)) {
             await query(stmt);
         }
@@ -151,7 +175,7 @@ app.post('/api/setup', upload.fields([{ name: 'candidate_photo' }, { name: 'logi
     } catch (e) { console.error(e); res.status(500).json({ error: 'setup_failed' }); }
 });
 
-app.post('/api/setup/admin-master', async (req, res) => {
+app.post('/api/setup/admin-master', ensureDB, async (req, res) => {
     const { phone, cpf, password } = req.body || {};
     if (!isPhone(phone) || !isCPF(cpf) || !password) return res.status(400).json({ error: 'invalid' });
     const hash = await bcrypt.hash(password, 10);
@@ -161,9 +185,31 @@ app.post('/api/setup/admin-master', async (req, res) => {
 });
 
 // -------- settings & push --------
-app.get('/api/settings', async (req, res) => { const [rows] = await query(`SELECT * FROM settings WHERE id=1`); res.json(rows[0] || {}); });
+// *** HANDLER À PROVA DE QUEDA ***
+app.get('/api/settings', async (req, res) => {
+    try {
+        // Se DB estiver pronto, tenta ler do banco
+        if (isDBReady()) {
+            const [rows] = await query(`SELECT * FROM settings WHERE id=1`);
+            return res.json(rows[0] || {});
+        }
+        // DB ainda não configurado: devolve defaults seguros
+        return res.json({
+            site_name: 'Gabinete+',
+            brand_primary: '#0b2240',
+            brand_secondary: '#1e3a8a',
+            brand_accent: '#b7c9d3',
+            heat_low: '#dc3545',
+            heat_mid: '#fd7e14',
+            heat_high: '#0d6efd'
+        });
+    } catch (e) {
+        // Nunca deixe esse endpoint derrubar a app
+        return res.json({});
+    }
+});
 
-app.post('/api/settings', auth, async (req, res) => {
+app.post('/api/settings', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id);
     if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const s = req.body || {};
@@ -175,15 +221,15 @@ app.post('/api/settings', auth, async (req, res) => {
 });
 
 // push subscribe (opcional)
-app.post('/api/push/subscribe', auth, async (req, res) => {
+app.post('/api/push/subscribe', auth, ensureDB, async (req, res) => {
     const sub = JSON.stringify(req.body || {});
     await query(`INSERT INTO push_subs(user_id,sub_json,created_at) VALUES(?,?,?)`, [req.user.id, sub, now()]);
     res.json({ ok: true });
 });
-app.post('/api/push/test', auth, async (req, res) => res.json({ ok: true }));
+app.post('/api/push/test', auth, (req, res) => res.json({ ok: true }));
 
 // -------- auth --------
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', ensureDB, async (req, res) => {
     const { phone, password } = req.body || {};
     if (!isPhone(phone)) return res.status(400).json({ error: 'invalid_phone' });
     const [rows] = await query(`SELECT * FROM users WHERE phone=?`, [String(phone).replace(/\D/g, '')]);
@@ -194,26 +240,32 @@ app.post('/api/login', async (req, res) => {
     const token = jwt.sign({ id: u.id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: await getMe(u.id) });
 });
-app.get('/api/me', auth, async (req, res) => res.json({ user: await getMe(req.user.id) }));
-app.post('/api/presence', auth, async (req, res) => {
+
+app.get('/api/me', auth, ensureDB, async (req, res) => res.json({ user: await getMe(req.user.id) }));
+
+app.post('/api/presence', auth, ensureDB, async (req, res) => {
     await query(`INSERT INTO presence(user_id,last_seen) VALUES(?,?) ${isPg() ? 'ON CONFLICT (user_id) DO UPDATE SET last_seen=EXCLUDED.last_seen' : 'ON DUPLICATE KEY UPDATE last_seen=VALUES(last_seen)'}`, [req.user.id, now()]);
     io.emit('presence:update', { user_id: req.user.id, online: true });
     res.json({ ok: true });
 });
 
 // -------- RA --------
-app.get('/api/ra', async (req, res) => { const [r] = await query(`SELECT * FROM ra ORDER BY name`); res.json(r); });
-app.post('/api/ra', auth, async (req, res) => {
+app.get('/api/ra', async (req, res) => {
+    if (!isDBReady()) return res.json([]); // antes do setup, devolve vazio
+    const [r] = await query(`SELECT * FROM ra ORDER BY name`);
+    res.json(r);
+});
+app.post('/api/ra', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     await query(`INSERT INTO ra(name) VALUES(?)`, [req.body.name]); res.json({ ok: true });
 });
-app.delete('/api/ra/:id', auth, async (req, res) => {
+app.delete('/api/ra/:id', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     await query(`DELETE FROM ra WHERE id=?`, [req.params.id]); res.json({ ok: true });
 });
 
 // -------- perfil --------
-app.put('/api/users/me', auth, async (req, res) => {
+app.put('/api/users/me', auth, ensureDB, async (req, res) => {
     const u = req.body || {};
     if (u.phone && !isPhone(u.phone)) return res.status(400).json({ error: 'invalid_phone' });
     if (u.cpf && !isCPF(u.cpf)) return res.status(400).json({ error: 'invalid_cpf' });
@@ -224,25 +276,31 @@ app.put('/api/users/me', auth, async (req, res) => {
 });
 
 // -------- banners --------
-app.get('/api/banners', async (req, res) => { const [r] = await query(`SELECT * FROM banners WHERE active=1 ORDER BY created_at DESC LIMIT 50`); res.json(r); });
-app.get('/api/admin/banners', auth, async (req, res) => { const me = await getMe(req.user.id); if (!isAdmin(me.role_key) && !isModerator(me.role_key)) return res.status(403).json({ error: 'forbidden' }); const [r] = await query(`SELECT * FROM banners ORDER BY created_at DESC`); res.json(r); });
-app.post('/api/admin/banners', auth, upload.single('image'), async (req, res) => {
+app.get('/api/banners', async (req, res) => {
+    if (!isDBReady()) return res.json([]);
+    const [r] = await query(`SELECT * FROM banners WHERE active=1 ORDER BY created_at DESC LIMIT 50`); res.json(r);
+});
+app.get('/api/admin/banners', auth, ensureDB, async (req, res) => {
+    const me = await getMe(req.user.id); if (!isAdmin(me.role_key) && !isModerator(me.role_key)) return res.status(403).json({ error: 'forbidden' }); const [r] = await query(`SELECT * FROM banners ORDER BY created_at DESC`); res.json(r);
+});
+app.post('/api/admin/banners', auth, ensureDB, upload.single('image'), async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key) && !isModerator(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     if (!req.file) return res.status(400).json({ error: 'image_required' });
     const url = '/uploads/' + req.file.filename; const { title, link_url } = req.body;
     const [r] = await query(`INSERT INTO banners(title,image_url,link_url,active,created_at) VALUES(?,?,?,?,?)`, [title || null, url, link_url || null, 1, now()]);
     res.json({ id: r?.insertId || r?.[0]?.id || null, title, image_url: url, link_url, active: 1 });
 });
-app.put('/api/admin/banners/:id', auth, async (req, res) => {
+app.put('/api/admin/banners/:id', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key) && !isModerator(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     if (req.body.activeToggle) { await query(`UPDATE banners SET active=${isPg() ? '1-active' : '1-active'} WHERE id=?`, [req.params.id]); return res.json({ ok: true }); }
     await query(`UPDATE banners SET title=COALESCE(?,title), link_url=COALESCE(?,link_url), active=COALESCE(?,active) WHERE id=?`,
         [req.body.title, req.body.link_url, req.body.active, req.params.id]); res.json({ ok: true });
 });
-app.delete('/api/admin/banners/:id', auth, async (req, res) => { const me = await getMe(req.user.id); if (!isAdmin(me.role_key) && !isModerator(me.role_key)) return res.status(403).json({ error: 'forbidden' }); await query(`DELETE FROM banners WHERE id=?`, [req.params.id]); res.json({ ok: true }); });
+app.delete('/api/admin/banners/:id', auth, ensureDB, async (req, res) => { const me = await getMe(req.user.id); if (!isAdmin(me.role_key) && !isModerator(me.role_key)) return res.status(403).json({ error: 'forbidden' }); await query(`DELETE FROM banners WHERE id=?`, [req.params.id]); res.json({ ok: true }); });
 
 // -------- posts / comments / likes / poll --------
 app.get('/api/posts', async (req, res) => {
+    if (!isDBReady()) return res.json([]);
     const [rows] = await query(`SELECT p.*, u.first_name,u.last_name,u.avatar_url,u.id as author_id
                              FROM posts p JOIN users u ON u.id=p.author_id
                              ORDER BY p.id DESC LIMIT 100`);
@@ -256,7 +314,7 @@ app.get('/api/posts', async (req, res) => {
     res.json(mapped);
 });
 
-app.post('/api/posts', auth, upload.single('media'), async (req, res) => {
+app.post('/api/posts', auth, ensureDB, upload.single('media'), async (req, res) => {
     const me = await getMe(req.user.id);
     if (me.status !== 'active') return res.status(403).json({ error: 'not_validated' });
     const { type, content, options, event_date, event_place } = req.body || {};
@@ -280,7 +338,7 @@ app.post('/api/posts', auth, upload.single('media'), async (req, res) => {
     res.json(post);
 });
 
-app.post('/api/posts/:id/like', auth, async (req, res) => {
+app.post('/api/posts/:id/like', auth, ensureDB, async (req, res) => {
     const pid = +req.params.id;
     const [[likedRow]] = await query(`SELECT 1 FROM post_likes WHERE post_id=? AND user_id=?`, [pid, req.user.id]);
     if (!likedRow) {
@@ -292,13 +350,12 @@ app.post('/api/posts/:id/like', auth, async (req, res) => {
     res.json({ likes: p.likes });
 });
 
-app.post('/api/posts/:id/vote', auth, async (req, res) => {
+app.post('/api/posts/:id/vote', auth, ensureDB, async (req, res) => {
     const pid = +req.params.id;
     const { option_id } = req.body || {};
     const [[exists]] = await query(`SELECT 1 FROM poll_votes WHERE post_id=? AND user_id=?`, [pid, req.user.id]);
     if (exists) return res.status(400).json({ error: 'already_voted' });
     await query(`INSERT INTO poll_votes(post_id,option_id,user_id) VALUES(?,?,?)`, [pid, option_id, req.user.id]);
-    // atualizar contagem no JSON (simples: recalcular)
     const [[row]] = await query(`SELECT options_json FROM posts WHERE id=?`, [pid]);
     let opts = row?.options_json ? JSON.parse(row.options_json) : [];
     const idx = opts.findIndex(o => o.id === option_id);
@@ -306,7 +363,7 @@ app.post('/api/posts/:id/vote', auth, async (req, res) => {
     res.json({ ok: true, options: opts });
 });
 
-app.post('/api/posts/:id/comment', auth, async (req, res) => {
+app.post('/api/posts/:id/comment', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id);
     const { text } = req.body || {};
     if (hasOffense(text)) {
@@ -320,7 +377,7 @@ app.post('/api/posts/:id/comment', auth, async (req, res) => {
 });
 
 // -------- hierarchy / ranking --------
-app.get('/api/hierarchy/me', auth, async (req, res) => {
+app.get('/api/hierarchy/me', auth, ensureDB, async (req, res) => {
     const [[me]] = await query(`SELECT id,first_name,last_name,avatar_url FROM users WHERE id=?`, [req.user.id]);
     const [level1] = await query(`SELECT id,first_name,last_name,avatar_url FROM users WHERE inviter_id=? ORDER BY id DESC`, [req.user.id]);
     const ids = level1.map(x => x.id);
@@ -328,7 +385,7 @@ app.get('/api/hierarchy/me', auth, async (req, res) => {
     res.json({ me, level1, level2 });
 });
 
-app.get('/api/admin/ranking', auth, async (req, res) => {
+app.get('/api/admin/ranking', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const from = parseInt(req.query.from || 0, 10) || 0;
     const to = parseInt(req.query.to || 0, 10) || now();
@@ -341,7 +398,7 @@ app.get('/api/admin/ranking', auth, async (req, res) => {
 });
 
 // -------- admin: users / metas / export-import --------
-app.get('/api/admin/users', auth, async (req, res) => {
+app.get('/api/admin/users', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const [rows] = await query(`SELECT u.*, r.name as ra_name,
      (SELECT COUNT(*) FROM users x WHERE x.inviter_id=u.id AND x.status='active') as referrals_valid,
@@ -354,15 +411,15 @@ app.get('/api/admin/users', auth, async (req, res) => {
         referrals_valid: +u.referrals_valid || 0, referrals_pending: +u.referrals_pending || 0
     })));
 });
-app.post('/api/admin/users/:id/status', auth, async (req, res) => {
+app.post('/api/admin/users/:id/status', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     await query(`UPDATE users SET status=? WHERE id=?`, [req.body.status, req.params.id]); res.json({ ok: true });
 });
-app.put('/api/admin/users/:id/goal', auth, async (req, res) => {
+app.put('/api/admin/users/:id/goal', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     await query(`UPDATE users SET goal_enabled=?, goal_total=? WHERE id=?`, [req.body.enabled ? 1 : 0, req.body.total || 0, req.params.id]); res.json({ ok: true });
 });
-app.get('/api/admin/users/:id/metrics', auth, async (req, res) => {
+app.get('/api/admin/users/:id/metrics', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const [[u]] = await query(`SELECT goal_enabled,goal_total FROM users WHERE id=?`, [req.params.id]);
     const [[v]] = await query(`SELECT COUNT(*) as c FROM users WHERE inviter_id=? AND status='active'`, [req.params.id]);
@@ -370,7 +427,7 @@ app.get('/api/admin/users/:id/metrics', auth, async (req, res) => {
     res.json({ goal_enabled: !!u.goal_enabled, goal_total: u.goal_total || 0, valid: +(v.c || 0), pending: +(p.c || 0) });
 });
 
-app.get('/api/admin/users/export.txt', auth, async (req, res) => {
+app.get('/api/admin/users/export.txt', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const [rows] = await query(`SELECT first_name,last_name,phone,role_key,city,ra_id FROM users ORDER BY id`);
     const lines = rows.map(r => `${r.first_name || ''};${r.last_name || ''};${r.phone || ''};;${r.role_key || 'usuario'};${r.city || ''};${r.ra_id || ''}`);
@@ -378,7 +435,7 @@ app.get('/api/admin/users/export.txt', auth, async (req, res) => {
     res.send(lines.join('\n'));
 });
 
-app.post('/api/admin/users/import.txt', auth, async (req, res) => {
+app.post('/api/admin/users/import.txt', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const text = String(req.body?.text || '');
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -397,19 +454,19 @@ app.post('/api/admin/users/import.txt', auth, async (req, res) => {
 });
 
 // -------- roles & permissions --------
-app.get('/api/admin/roles', auth, async (req, res) => {
+app.get('/api/admin/roles', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const [rows] = await query(`SELECT * FROM roles ORDER BY immutable DESC, name`);
     res.json(rows);
 });
-app.post('/api/admin/roles', auth, async (req, res) => {
+app.post('/api/admin/roles', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const { key_name, name } = req.body || {};
     if (!key_name || !name) return res.status(400).json({ error: 'missing' });
     await query(`INSERT INTO roles(key_name,name,immutable) VALUES(?, ?, 0)`, [key_name, name]);
     res.json({ ok: true });
 });
-app.delete('/api/admin/roles/:key', auth, async (req, res) => {
+app.delete('/api/admin/roles/:key', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const [[r]] = await query(`SELECT immutable FROM roles WHERE key_name=?`, [req.params.key]);
     if (r?.immutable) return res.status(400).json({ error: 'immutable' });
@@ -417,13 +474,13 @@ app.delete('/api/admin/roles/:key', auth, async (req, res) => {
     await query(`DELETE FROM permissions WHERE role_key=?`, [req.params.key]);
     res.json({ ok: true });
 });
-app.get('/api/admin/permissions', auth, async (req, res) => {
+app.get('/api/admin/permissions', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const role = req.query.role; if (!role) return res.status(400).json({ error: 'missing_role' });
     const [rows] = await query(`SELECT * FROM permissions WHERE role_key=?`, [role]);
     res.json(rows);
 });
-app.put('/api/admin/permissions', auth, async (req, res) => {
+app.put('/api/admin/permissions', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
     const { role_key, items } = req.body || {};
     if (!role_key || !Array.isArray(items)) return res.status(400).json({ error: 'bad_payload' });
@@ -436,7 +493,7 @@ app.put('/api/admin/permissions', auth, async (req, res) => {
 });
 
 // -------- invitations --------
-app.post('/api/invitations', auth, async (req, res) => {
+app.post('/api/invitations', auth, ensureDB, async (req, res) => {
     const me = await getMe(req.user.id);
     if (me.status !== 'active') return res.status(403).json({ error: 'not_validated' });
     const { full_name, phone } = req.body || {};
@@ -448,11 +505,13 @@ app.post('/api/invitations', auth, async (req, res) => {
     res.json({ code, link: `${req.protocol}://${req.get('host')}/login.html?invite=${code}` });
 });
 app.get('/api/invitations/:code', async (req, res) => {
+    if (!isDBReady()) return res.status(404).json({ error: 'not_found' });
     const [[inv]] = await query(`SELECT code,full_name,phone,status FROM invitations WHERE code=?`, [req.params.code]);
     if (!inv) return res.status(404).json({ error: 'not_found' });
     res.json(inv);
 });
 app.post('/api/invitations/:code/complete', async (req, res) => {
+    if (!isDBReady()) return res.status(503).json({ error: 'setup_required' });
     const { phone, password, first_name, last_name, cep, city, ra_id } = req.body || {};
     const [[inv]] = await query(`SELECT * FROM invitations WHERE code=? AND status='pending'`, [req.params.code]);
     if (!inv) return res.status(400).json({ error: 'invalid_code' });
@@ -469,15 +528,13 @@ app.post('/api/invitations/:code/complete', async (req, res) => {
 
 // -------- contato --------
 app.post('/api/contact', async (req, res) => {
+    if (!isDBReady()) return res.json({ ok: true }); // aceita durante pré-setup (ou troque para 503)
     const { name, phone, email, city, uf, message } = req.body || {};
     if (!name || !message) return res.status(400).json({ error: 'missing' });
     await query(`INSERT INTO contact_messages(name,phone,email,city,uf,message,created_at) VALUES(?,?,?,?,?,?,?)`,
         [name, phone || null, email || null, city || null, (uf || '').toUpperCase().slice(0, 2), message, now()]);
     res.json({ ok: true });
 });
-
-// -------- static uploads --------
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { etag: false, cacheControl: false }));
 
 // -------- sockets --------
 io.on('connection', (socket) => { socket.on('hello', () => { }); });
