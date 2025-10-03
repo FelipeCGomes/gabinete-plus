@@ -1,171 +1,141 @@
-import 'dotenv/config';
-import fs from 'fs';
+// server.js (ESM)
+// Executa servidor, serve arquivos estáticos e expõe rotas de bootstrap seguras.
+// Observação: esta versão NÃO consulta DB na rota /api/bootstrap/status.
+// Assim, mesmo se o DB não estiver pronto, o status funciona e evita 502.
+
+import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import express from 'express';
-import cors from 'cors';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
-import multer from 'multer';
-import { Server as IOServer } from 'socket.io';
-import webpush from 'web-push';
-import { v4 as uuidv4 } from 'uuid';
+import cookieParser from 'cookie-parser';
+import bodyParser from 'body-parser';
+import crypto from 'crypto';
+import fs from 'fs';
 
 import {
-    startBootstrap, getBootstrapStatus, retryBootstrap,
-    isDBReady, isPg, query
+    initDB,
+    ensureSchema,
+    createAdminMasterIfMissing,
+    testConnection
 } from './db.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
-const http = app.listen(process.env.PORT || 8080, () => console.log('Gabinete+ on', http.address().port));
-const io = new IOServer(http, { cors: { origin: '*' } });
+app.set('trust proxy', true);
+app.use(cookieParser());
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
-app.use(cors());
-app.use(express.json({ limit: '12mb' }));
-app.use(express.urlencoded({ extended: true }));
+// ----------------------
+// Estado de bootstrap (em memória)
+// ----------------------
+const bootstrapState = {
+    inProgress: false,
+    ok: false,
+    stage: 'idle',     // idle | connecting | creating_schema | creating_admin | done | error
+    message: 'Aguardando inicialização',
+    error: null,
+    lastTriedAt: null,
+};
 
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-const upload = multer({ dest: uploadsDir });
-
-app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false, cacheControl: false }));
-app.use('/uploads', express.static(uploadsDir, { etag: false, cacheControl: false }));
-
-const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
-
-// Push (opcional via ENV; pode deixar vazio)
-if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-    webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:you@example.com',
-        process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
-}
-
-// === Inicia bootstrap do DB (assíncrono; status exposto em /api/bootstrap) ===
-startBootstrap();
-
-// Helpers
-function auth(req, res, next) {
-    const t = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-    if (!t) return res.status(401).json({ error: 'no_token' });
-    try { req.user = jwt.verify(t, JWT_SECRET); next(); }
-    catch { return res.status(401).json({ error: 'bad_token' }); }
-}
-const BADWORDS = ['palavrao1', 'palavrao2', 'idiota', 'burro'];
-const hasOffense = (s = '') => BADWORDS.some(w => (s || '').toLowerCase().includes(w));
-const isPhone = s => /^\+?\d{10,14}$/.test(String(s || '').replace(/\D/g, ''));
-function isCPF(s) {
-    s = String(s || '').replace(/[^\d]/g, ''); if (!/^\d{11}$/.test(s)) return false;
-    if (/^(\d)\1+$/.test(s)) return false;
-    let sum = 0; for (let i = 0; i < 9; i++) sum += parseInt(s[i]) * (10 - i);
-    let rev = 11 - (sum % 11); if (rev >= 10) rev = 0; if (rev != parseInt(s[9])) return false;
-    sum = 0; for (let i = 0; i < 10; i++) sum += parseInt(s[i]) * (11 - i);
-    rev = 11 - (sum % 11); if (rev >= 10) rev = 0; return rev == parseInt(s[10]);
-}
-const isAdmin = r => r === 'admin_master' || r === 'administrador';
-
-async function getMe(id) {
-    const [rows] = await query(`
-    SELECT u.*, r.name as ra_name,
-           (SELECT CONCAT(i.first_name,' ',i.last_name) FROM users i WHERE i.id=u.inviter_id) as inviter_name
-      FROM users u LEFT JOIN ra r ON r.id=u.ra_id WHERE u.id=?`, [id]);
-    const u = rows[0];
-    if (!u) return null;
-    return {
-        id: u.id, phone: u.phone, role_key: u.role_key, status: u.status,
-        first_name: u.first_name, last_name: u.last_name, address: u.address,
-        cep: u.cep, city: u.city, ra_id: u.ra_id, ra_name: u.ra_name,
-        inviter_id: u.inviter_id, inviter_name: u.inviter_name, avatar_url: u.avatar_url
-    };
-}
-
-// ===== Bootstrap status (para o overlay do frontend) =====
-app.get('/api/bootstrap/status', (req, res) => res.json(getBootstrapStatus()));
-app.post('/api/bootstrap/retry', async (req, res) => res.json(await retryBootstrap()));
-
-// ===== Navegação básica =====
-app.get('/', (req, res) => res.redirect('/home.html'));
-
-// ===== Settings mínimos para estilizar login/home mesmo sem DB =====
-app.get('/api/settings', async (req, res) => {
-    if (!isDBReady()) return res.json({
-        site_name: 'Gabinete+',
-        brand_primary: '#0b2240',
-        brand_secondary: '#1e3a8a',
-        brand_accent: '#b7c9d3',
-        heat_low: '#dc3545',
-        heat_mid: '#fd7e14',
-        heat_high: '#0d6efd',
-        login_candidate_photo: null,
-        login_bg_url: null,
-        login_bg_blur: 0,
-        login_bg_brightness: 100
+// Expor sempre a rota de status (não faz query no DB)
+app.get('/api/bootstrap/status', (_req, res) => {
+    res.json({
+        ok: bootstrapState.ok,
+        inProgress: bootstrapState.inProgress,
+        stage: bootstrapState.stage,
+        message: bootstrapState.message,
+        error: bootstrapState.error,
+        lastTriedAt: bootstrapState.lastTriedAt,
     });
-    const [rows] = await query(`SELECT * FROM settings WHERE id=1`);
-    res.json(rows[0] || {});
 });
 
-// ===== Auth =====
-app.post('/api/login', async (req, res) => {
-    if (!isDBReady()) return res.status(503).json({ error: 'bootstrap_in_progress' });
-    const { phone, password } = req.body || {};
-    if (!isPhone(phone)) return res.status(400).json({ error: 'invalid_phone' });
-    const [rows] = await query(`SELECT * FROM users WHERE phone=?`, [String(phone).replace(/\D/g, '')]);
-    const u = rows[0];
-    if (!u) return res.status(401).json({ error: 'not_found' });
-    if (!(await bcrypt.compare(password, u.password_hash))) return res.status(401).json({ error: 'bad_credentials' });
-    if (u.status === 'blocked') return res.status(403).json({ error: 'blocked' });
-    const token = jwt.sign({ id: u.id }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: await getMe(u.id) });
-});
-app.get('/api/me', auth, async (req, res) => {
-    if (!isDBReady()) return res.status(503).json({ error: 'bootstrap_in_progress' });
-    res.json({ user: await getMe(req.user.id) });
+// Acionador manual do bootstrap
+app.post('/api/bootstrap/retry', async (_req, res) => {
+    try {
+        await runBootstrap();
+        res.json({ ok: true });
+    } catch (e) {
+        res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
 });
 
-// ===== RA =====
-app.get('/api/ra', async (req, res) => {
-    if (!isDBReady()) return res.json([]);
-    const [r] = await query(`SELECT * FROM ra ORDER BY name`);
-    res.json(r);
+// Healthcheck simples (Render usa em cold start)
+app.get('/health', (_req, res) => res.status(200).send('OK'));
+
+// Servir estáticos
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: 0 }));
+
+// ====== A PARTIR DAQUI, PROTEJA SUAS ROTAS /api QUE PRECISAM DO DB ======
+// Exemplo de guarda global: bloqueia chamadas que precisem de DB
+app.use('/api', (req, res, next) => {
+    if (req.path.startsWith('/bootstrap')) return next(); // já tratado acima
+    if (!bootstrapState.ok) {
+        return res.status(503).json({
+            error: 'bootstrap_not_ready',
+            state: bootstrapState,
+        });
+    }
+    next();
 });
 
-// ===== Banners =====
-app.get('/api/banners', async (req, res) => {
-    if (!isDBReady()) return res.json([]);
-    const [r] = await query(`SELECT * FROM banners WHERE active=1 ORDER BY created_at DESC LIMIT 50`);
-    res.json(r);
-});
-app.post('/api/admin/banners', auth, async (req, res) => {
-    if (!isDBReady()) return res.status(503).json({ error: 'bootstrap_in_progress' });
-    const me = await getMe(req.user.id); if (!isAdmin(me.role_key)) return res.status(403).json({ error: 'forbidden' });
-    res.status(501).json({ error: 'not_implemented_in_this_snippet' });
+// (coloque aqui suas outras rotas /api que usam DB, se houver)
+
+// Rota fallback para abrir login.html diretamente em GET /
+app.get('*', (_req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
-// ===== Posts (principais rotas usadas no Home) =====
-app.get('/api/posts', async (req, res) => {
-    if (!isDBReady()) return res.json([]);
-    const [rows] = await query(`SELECT p.*, u.first_name,u.last_name,u.avatar_url,u.id as author_id
-                             FROM posts p JOIN users u ON u.id=p.author_id
-                             ORDER BY p.id DESC LIMIT 100`);
-    const mapped = rows.map(r => ({
-        id: r.id, type: r.type, content: r.content, media_url: r.media_url,
-        options: r.options_json ? JSON.parse(r.options_json) : [],
-        event_date: r.event_date, event_place: r.event_place,
-        likes: r.likes, created_at: r.created_at,
-        first_name: r.first_name, last_name: r.last_name, avatar_url: r.avatar_url, author_id: r.author_id
-    }));
-    res.json(mapped);
+// ----------------------
+// Bootstrap automático no start
+// ----------------------
+async function runBootstrap() {
+    if (bootstrapState.inProgress) return;
+    bootstrapState.inProgress = true;
+    bootstrapState.lastTriedAt = new Date().toISOString();
+    bootstrapState.error = null;
+
+    try {
+        // 1) Testar conexão
+        bootstrapState.stage = 'connecting';
+        bootstrapState.message = 'Conectando ao banco...';
+        await initDB();           // lê ENV ou config interna
+        await testConnection();   // SELECT 1
+
+        // 2) Criar esquema (se faltar)
+        bootstrapState.stage = 'creating_schema';
+        bootstrapState.message = 'Criando/validando tabelas...';
+        await ensureSchema();
+
+        // 3) Criar Admin Master se não existir
+        bootstrapState.stage = 'creating_admin';
+        bootstrapState.message = 'Criando Admin Master (se necessário)...';
+        await createAdminMasterIfMissing({
+            phone: process.env.ADMIN_MASTER_PHONE || '61999999999',
+            password: process.env.ADMIN_MASTER_PASSWORD || 'Senha@Forte1!',
+            cpf: process.env.ADMIN_MASTER_CPF || '12345678909',
+            name: process.env.ADMIN_MASTER_NAME || 'Admin Master',
+        });
+
+        // 4) Finalizado
+        bootstrapState.stage = 'done';
+        bootstrapState.message = 'Pronto!';
+        bootstrapState.ok = true;
+    } catch (err) {
+        bootstrapState.stage = 'error';
+        bootstrapState.message = 'Falha na inicialização';
+        bootstrapState.error = String(err?.message || err);
+        bootstrapState.ok = false;
+    } finally {
+        bootstrapState.inProgress = false;
+    }
+}
+
+// dispara ao subir
+runBootstrap().catch(() => { /* já capturado dentro */ });
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+    console.log(`Gabinete+ on ${PORT}`);
 });
-
-app.post('/api/posts', auth, async (req, res) => {
-    if (!isDBReady()) return res.status(503).json({ error: 'bootstrap_in_progress' });
-    // Para simplificar o snippet, bloqueamos criação de post por multipart aqui.
-    // Seu projeto já tem a versão completa — reative conforme seu /public/js/pages/home.js.
-    res.status(501).json({ error: 'not_implemented_in_this_snippet' });
-});
-
-// ===== Health =====
-app.get('/health', (req, res) => res.json({ ok: true }));
-
-// ===== Socket.IO mínimos (presença/likes no seu código completo) =====
-io.on('connection', () => { });

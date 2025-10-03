@@ -1,134 +1,116 @@
-const GP = { token: localStorage.getItem('gp_token') || null, user: null, settings: null, socket: null };
+// app.js
+// Overlay de bootstrap robusto: consulta /api/bootstrap/status,
+// trata 502/Failed to fetch e permite "Tentar novamente" (POST /api/bootstrap/retry)
 
-function setActiveNav(path) { document.querySelectorAll('.navbar nav a').forEach(a => a.getAttribute('href') === path ? a.classList.add('active') : a.classList.remove('active')); }
+(function () {
+    const POLL_EVERY_MS = 2000;
 
-async function api(path, { method = 'GET', body, form = false, noStore = false } = {}) {
-    const headers = {}; if (!form) headers['Content-Type'] = 'application/json'; if (GP.token) headers['Authorization'] = 'Bearer ' + GP.token;
-    const res = await fetch(path + (noStore ? (path.includes('?') ? '&' : '?') + 'nc=' + Date.now() : ''), { method, headers, body: form ? body : (body ? JSON.stringify(body) : undefined), cache: noStore ? 'no-store' : 'default' });
-    if (res.status === 401) { localStorage.removeItem('gp_token'); if (!location.pathname.endsWith('/login.html')) location.href = '/login.html'; throw new Error('auth'); }
-    const ct = res.headers.get('content-type') || '';
-    const data = ct.includes('application/json') ? await res.json() : await res.text();
-    if (!res.ok) throw new Error(typeof data === 'string' ? data : JSON.stringify(data));
-    return data;
-}
+    function el(html) {
+        const d = document.createElement('div');
+        d.innerHTML = html.trim();
+        return d.firstElementChild;
+    }
 
-async function loadSettings() {
-    try {
-        GP.settings = await api('/api/settings', { noStore: true });
-        const r = document.documentElement;
-        if (GP.settings.brand_primary) r.style.setProperty('--brand-primary', GP.settings.brand_primary);
-        if (GP.settings.brand_secondary) r.style.setProperty('--brand-secondary', GP.settings.brand_secondary);
-        if (GP.settings.brand_accent) r.style.setProperty('--brand-accent', GP.settings.brand_accent);
-        if (GP.settings.heat_low) r.style.setProperty('--heat-low', GP.settings.heat_low);
-        if (GP.settings.heat_mid) r.style.setProperty('--heat-mid', GP.settings.heat_mid);
-        if (GP.settings.heat_high) r.style.setProperty('--heat-high', GP.settings.heat_high);
-    } catch (e) { console.warn('settings', e); }
-}
-
-async function loadMe() { if (!GP.token) return null; try { const data = await api('/api/me', { noStore: true }); GP.user = data.user; return GP.user; } catch { GP.user = null; return null; } }
-function ensureAuthOrRedirect() { if (!GP.token) { location.href = '/login.html'; return false; } return true; }
-function logout() { localStorage.removeItem('gp_token'); GP.token = null; GP.user = null; location.href = '/login.html'; }
-
-function renderNavbar(activePath) {
-    const wrap = document.getElementById('navbar'); if (!wrap) return;
-    const isLogged = !!GP.user; const isAdmin = GP.user && (GP.user.role_key === 'administrador' || GP.user.role_key === 'admin_master');
-    wrap.innerHTML = `
-    <div class="navbar">
-      <div class="brand"><img src="/assets/logo.svg" alt="logo"/><div>${(GP.settings && GP.settings.site_name) || 'Gabinete+'}</div></div>
-      <nav>
-        <a href="/home.html">Início</a>
-        ${isLogged ? `<a href="/profile.html">Perfil</a>` : ''}
-        ${isLogged ? `<a href="/hierarchy.html">Hierarquia</a>` : ''}
-        ${isAdmin ? `<a href="/admin.html">Admin</a>` : ''}
-        ${isAdmin ? `<a href="/admin-users.html">Usuários</a>` : ''}
-        ${isAdmin ? `<a href="/admin-heatmap.html">Mapa</a>` : ''}
-        <a href="/about.html">Sobre</a>
-        <a href="/contact.html">Fale conosco</a>
-      </nav>
-      <div class="right">
-        ${isLogged ? `<span class="badge">${GP.user.first_name || 'Usuário'}</span><button class="btn ghost" id="btnLogout">Sair</button>` : `<a class="btn" href="/login.html">Entrar</a>`}
-      </div>
-    </div>`;
-    if (activePath) setActiveNav(activePath); else setActiveNav(location.pathname);
-    const btn = document.getElementById('btnLogout'); if (btn) btn.addEventListener('click', logout);
-}
-
-function bootstrapOverlay() {
-    let box = document.getElementById('bootstrapOverlay');
-    if (box) return box;
-    box = document.createElement('div');
-    box.id = 'bootstrapOverlay';
-    box.innerHTML = `
-    <div class="bo-wrap">
-      <div class="bo-card">
-        <h3>Inicializando Banco de Dados…</h3>
-        <div id="bo-log" class="bo-log"></div>
-        <div id="bo-error" class="bo-error" style="display:none"></div>
-        <div class="bo-actions">
-          <button id="bo-retry" class="btn" style="display:none">Tentar novamente</button>
+    const overlay = el(`
+    <div id="gp-bootstrap" style="
+      position: fixed; inset: 0; background: rgba(0,0,0,.6);
+      display: none; align-items: center; justify-content: center; z-index: 9999;
+    ">
+      <div style="background:#fff; max-width:520px; width:92%; border-radius:14px; padding:20px; box-shadow:0 10px 30px rgba(0,0,0,.3)">
+        <h3 style="margin:0 0 8px 0; font-weight:700;">Inicializando Banco de Dados…</h3>
+        <p id="gp-msg" style="margin:0 0 8px 0; color:#333;">Verificando status…</p>
+        <pre id="gp-err" style="display:none; background:#f8e8e8; color:#b00020; padding:10px; border-radius:8px; white-space:pre-wrap"></pre>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button id="gp-retry" style="display:none; padding:10px 14px; border-radius:8px; border:0; background:#0D6EFD; color:#fff; cursor:pointer">Tentar novamente</button>
+          <button id="gp-hide"  style="display:none; padding:10px 14px; border-radius:8px; border:1px solid #ccc; background:#fafafa; cursor:pointer">Ocultar</button>
         </div>
       </div>
-    </div>`;
-    document.body.appendChild(box);
-    return box;
-}
-function hideBootstrapOverlay() { const box = document.getElementById('bootstrapOverlay'); if (box) box.remove(); }
+    </div>
+  `);
 
-async function pollBootstrap() {
-    const box = bootstrapOverlay();
-    const $log = box.querySelector('#bo-log');
-    const $err = box.querySelector('#bo-error');
-    const $retry = box.querySelector('#bo-retry');
+    document.addEventListener('DOMContentLoaded', () => {
+        document.body.appendChild(overlay);
+        startPolling();
+    });
 
-    async function tick() {
+    let timer = null;
+
+    async function fetchStatus() {
+        const r = await fetch('/api/bootstrap/status', {
+            method: 'GET',
+            cache: 'no-store',
+            credentials: 'same-origin'
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    }
+
+    async function pollOnce() {
+        const msg = overlay.querySelector('#gp-msg');
+        const err = overlay.querySelector('#gp-err');
+        const btnRetry = overlay.querySelector('#gp-retry');
+        const btnHide = overlay.querySelector('#gp-hide');
+
         try {
-            const st = await api('/api/bootstrap/status', { noStore: true });
-            $log.innerHTML = st.steps.map(s => `<div>• ${new Date(s.t).toLocaleTimeString()} — ${s.msg}</div>`).join('');
-            if (st.error) {
-                $err.style.display = 'block';
-                $err.textContent = 'Erro: ' + st.error;
-                $retry.style.display = 'inline-block';
+            const s = await fetchStatus();
+
+            // Exibir overlay se ainda não está pronto
+            if (!s.ok) {
+                overlay.style.display = 'flex';
+                err.style.display = 'none';
+                btnRetry.style.display = 'none';
+                btnHide.style.display = 'none';
+
+                let human = 'Verificando...';
+                if (s.stage === 'connecting') human = 'Conectando ao banco...';
+                else if (s.stage === 'creating_schema') human = 'Criando/validando tabelas...';
+                else if (s.stage === 'creating_admin') human = 'Criando Admin Master...';
+                else if (s.stage === 'error') human = 'Erro ao inicializar';
+                msg.textContent = human;
+
+                if (s.stage === 'error') {
+                    err.style.display = 'block';
+                    err.textContent = s.error || 'Erro desconhecido';
+                    btnRetry.style.display = 'inline-block';
+                    btnHide.style.display = 'inline-block';
+                }
             } else {
-                $err.style.display = 'none';
-                $retry.style.display = 'none';
+                // Pronto: sumir com overlay
+                overlay.style.display = 'none';
             }
-            if (st.ready) {
-                hideBootstrapOverlay();
-                await loadSettings();
-                await loadMe();
-                renderNavbar();
-                return;
-            }
-            setTimeout(tick, 1500);
         } catch (e) {
-            $err.style.display = 'block';
-            $err.textContent = 'Falha ao consultar status. ' + e.message;
-            $retry.style.display = 'inline-block';
+            // Falha de rede, 502, etc.
+            overlay.style.display = 'flex';
+            msg.textContent = 'Servidor reiniciando ou indisponível. Tentando novamente...';
+            const errBox = overlay.querySelector('#gp-err');
+            errBox.style.display = 'block';
+            errBox.textContent = String(e?.message || e);
+            const btnRetry = overlay.querySelector('#gp-retry');
+            const btnHide = overlay.querySelector('#gp-hide');
+            btnRetry.style.display = 'inline-block';
+            btnHide.style.display = 'inline-block';
         }
     }
-    $log.innerHTML = '<div>• Aguardando…</div>';
-    $retry.onclick = async () => {
-        $err.style.display = 'none';
-        $retry.style.display = 'none';
-        try {
-            await api('/api/bootstrap/retry', { method: 'POST' });
-            setTimeout(tick, 800);
-        } catch (e) {
-            $err.style.display = 'block';
-            $err.textContent = 'Não foi possível reiniciar: ' + e.message;
-            $retry.style.display = 'inline-block';
+
+    function startPolling() {
+        stopPolling();
+        pollOnce();
+        timer = setInterval(pollOnce, POLL_EVERY_MS);
+    }
+
+    function stopPolling() {
+        if (timer) clearInterval(timer);
+        timer = null;
+    }
+
+    overlay.addEventListener('click', (ev) => {
+        if (ev.target.id === 'gp-hide') {
+            overlay.style.display = 'none';
         }
-    };
-    tick();
-}
-
-function registerSW() { if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(console.warn); }
-
-window.api = api; window.loadMe = loadMe; window.loadSettings = loadSettings; window.renderNavbar = renderNavbar;
-window.logout = logout; window.pollBootstrap = pollBootstrap; window.registerSW = registerSW;
-
-(async function boot() {
-    registerSW();
-    // inicia overlay de bootstrap assim que carregar qualquer página
-    pollBootstrap();
+        if (ev.target.id === 'gp-retry') {
+            fetch('/api/bootstrap/retry', { method: 'POST' })
+                .catch(() => { })   // se cair, o polling cuidará
+                .finally(() => startPolling());
+        }
+    });
 })();

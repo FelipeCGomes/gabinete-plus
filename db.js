@@ -1,226 +1,160 @@
-// db.js — Gabinete+ v0.7.0
-// - Config direto aqui (DIRECT_DB_CONFIG) OU via ENV (tem prioridade se definido).
-// - Inicializa pool, testa conexão, aplica schema automaticamente se faltar.
-// - Exports status de bootstrap para frontend mostrar progresso e "tentar novamente".
+// db.js (ESM)
+// Configuração do Postgres via ENV ou bloco fixo (DIRECT_DB_CONFIG).
+// Sem "serial"; sem default de UUID (geramos pelo Node). Seguro no Render.
 
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { Pool as PgPool } from 'pg';
-import mysql from 'mysql2/promise';
-import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCHEMA_PG = path.join(__dirname, 'schema.pg.sql');
-const SCHEMA_MY = path.join(__dirname, 'schema.mysql.sql');
-
+let pg = null;
 let pool = null;
-let driver = null; // 'pg' | 'mysql'
 
-// ===== CONFIG DIRETA (edite aqui se não usar .env) =====
+//const DIRECT_DB_CONFIG = {};
+// Deixe {} para usar ENV no Render. 
+// Se quiser fixar manualmente, preencha assim:
 const DIRECT_DB_CONFIG = {
-    // Exemplo Postgres:
-    type: 'postgres',
-    host: 'dpg-d3g18o1r0fns73dm6p60-a.external',
-    port: 5432,
-    user: 'gabinete_plus_user',
-    password: 'ibyKDwL2iot9ASwhywoK3YmqssTINmai',
-    database: 'gabinete_plus_qz12',
-    ssl: true,
-
-    // Exemplo MySQL:
-    // type: 'mysql',
-    // host: 'localhost',
-    // port: 3306,
-    // user: 'gabinete',
-    // password: 'senha',
-    // database: 'gabinete_plus',
-    // ssl: false,
-
+  type: 'postgres',
+  host: 'dpg-d3g18o1r0fns73dm6p60-a.internal',
+  port: 5432,
+  user: 'gabinete_plus_user',
+  password: 'ibyKDwL2iot9ASwhywoK3YmqssTINmai',
+  database: 'gabinete_plus_qz12',
+  ssl: true,
 };
 
-// ===== ADMIN MASTER SEED =====
-const SEED_ADMIN = {
-    phone: process.env.ADMIN_MASTER_PHONE || '61999999999',
-    password: process.env.ADMIN_MASTER_PASSWORD || 'Senha@Forte1!',
-    cpf: process.env.ADMIN_MASTER_CPF || '12345678909'
-};
-
-// ===== Bootstrap state (para UI) =====
-const bootstrap = {
-    running: false,
-    ready: false,
-    steps: [],
-    error: null
-};
-function step(msg) { bootstrap.steps.push({ t: Date.now(), msg }); }
-
-// ===== Utils =====
-export function isPg() { return driver === 'pg'; }
-export function isDBReady() { return !!pool; }
-
-// Aplica "?" -> $1,$2,... para Postgres
-function toPg(sql, params) {
-    if (!params || !params.length) return { sql, params };
-    let i = 0; const s = sql.replace(/\?/g, () => '$' + (++i));
-    return { sql: s, params };
-}
-
-// Resolve config a partir do ENV ou do bloco DIRECT_DB_CONFIG
-function resolveConfig() {
-    // ENV Postgres
-    if (process.env.POSTGRES_HOST || process.env.POSTGRES_DATABASE || process.env.POSTGRES_USER) {
+function readConfig() {
+    if (DIRECT_DB_CONFIG && DIRECT_DB_CONFIG.type) {
+        return DIRECT_DB_CONFIG;
+    }
+    // ENV → Render
+    const type = process.env.DB_TYPE || (process.env.POSTGRES_HOST ? 'postgres' : null);
+    if (type === 'postgres') {
         return {
             type: 'postgres',
             host: process.env.POSTGRES_HOST,
-            port: +(process.env.POSTGRES_PORT || 5432),
+            port: Number(process.env.POSTGRES_PORT || 5432),
             user: process.env.POSTGRES_USER,
             password: process.env.POSTGRES_PASSWORD,
             database: process.env.POSTGRES_DATABASE,
-            ssl: !!(+process.env.POSTGRES_SSL || 0),
+            ssl: !!(process.env.POSTGRES_SSL && process.env.POSTGRES_SSL !== '0'),
         };
     }
-    // ENV MySQL
-    if (process.env.MYSQL_HOST || process.env.MYSQL_DATABASE || process.env.MYSQL_USER) {
-        return {
-            type: 'mysql',
-            host: process.env.MYSQL_HOST,
-            port: +(process.env.MYSQL_PORT || 3306),
-            user: process.env.MYSQL_USER,
-            password: process.env.MYSQL_PASSWORD,
-            database: process.env.MYSQL_DATABASE,
-            ssl: !!(+process.env.MYSQL_SSL || 0),
-        };
-    }
-    // Direto no arquivo
-    if (DIRECT_DB_CONFIG && DIRECT_DB_CONFIG.host && DIRECT_DB_CONFIG.user && DIRECT_DB_CONFIG.database) {
-        return { ...DIRECT_DB_CONFIG };
-    }
-    return null;
+    throw new Error('DB config ausente. Defina ENV de Postgres ou DIRECT_DB_CONFIG.');
 }
 
-// Inicializa pool a partir da cfg
-function initDB(cfg) {
-    driver = (cfg.type || '').toLowerCase().startsWith('post') ? 'pg' : 'mysql';
-    if (driver === 'pg') {
-        pool = new PgPool({
-            host: cfg.host, port: +(cfg.port || 5432), user: cfg.user, password: cfg.password, database: cfg.database,
-            ssl: cfg.ssl ? { rejectUnauthorized: false } : undefined
-        });
-    } else {
-        pool = mysql.createPool({
-            host: cfg.host, port: +(cfg.port || 3306), user: cfg.user, password: cfg.password, database: cfg.database,
-            waitForConnections: true, connectionLimit: 10, queueLimit: 0,
-            ssl: cfg.ssl ? { minVersion: 'TLSv1.2', rejectUnauthorized: false } : undefined
-        });
+export async function initDB() {
+    if (pool) return pool;
+    const cfg = readConfig();
+
+    if (cfg.type !== 'postgres') {
+        throw new Error('Somente Postgres nessa configuração.');
     }
+
+    if (!pg) {
+        // importa sob demanda (resolve problemas de ESM)
+        pg = await import('pg');
+    }
+    const { Pool } = pg;
+
+    pool = new Pool({
+        host: cfg.host,
+        port: cfg.port,
+        user: cfg.user,
+        password: cfg.password,
+        database: cfg.database,
+        ssl: cfg.ssl ? { rejectUnauthorized: false } : false,
+        max: 5,
+    });
+
+    return pool;
 }
 
-// Query normalizada
-export async function query(sql, params = []) {
+export async function testConnection() {
+    if (!pool) await initDB();
+    await pool.query('SELECT 1');
+    return true;
+}
+
+export async function ensureSchema() {
+    // Cria tabelas mínimas necessárias para login e posts.
+    // Sem SERIAL/IDENTITY; chaves serão geradas no app (UUID v4).
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      phone TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user', -- 'master','admin','moderator','user'
+      name TEXT,
+      cpf TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      active BOOLEAN DEFAULT true
+    );
+  `);
+
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS posts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,             -- photo|video|text|poll|event
+      text TEXT,
+      media_url TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      status TEXT DEFAULT 'visible'
+    );
+  `);
+
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS groups (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      permissions JSONB DEFAULT '{}'::jsonb
+    );
+  `);
+
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_groups (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      PRIMARY KEY (user_id, group_id)
+    );
+  `);
+
+    // Grupos padrão
+    await pool.query(
+        `INSERT INTO groups (id, name, permissions) 
+     VALUES ($1, 'Admin Master', '{}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+        [crypto.randomUUID()]
+    );
+    await pool.query(
+        `INSERT INTO groups (id, name, permissions) 
+     VALUES ($1, 'Admin', '{}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+        [crypto.randomUUID()]
+    );
+    await pool.query(
+        `INSERT INTO groups (id, name, permissions) 
+     VALUES ($1, 'Moderator', '{"content": true}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+        [crypto.randomUUID()]
+    );
+}
+
+export async function createAdminMasterIfMissing({ phone, password, cpf, name }) {
+    const bcrypt = (await import('bcryptjs')).default;
+    const { rows } = await pool.query(`SELECT id FROM users LIMIT 1`);
+    if (rows.length > 0) return; // já tem algum usuário
+
+    const id = crypto.randomUUID();
+    const hash = await bcrypt.hash(password, 10);
+
+    await pool.query(
+        `INSERT INTO users (id, phone, password_hash, role, name, cpf, active)
+     VALUES ($1, $2, $3, 'master', $4, $5, true)
+    `,
+        [id, phone, hash, name, cpf]
+    );
+}
+
+export async function query(text, params) {
     if (!pool) throw new Error('DB not initialized');
-    if (driver === 'pg') {
-        const { sql: s, params: p } = toPg(sql, params);
-        const r = await pool.query(s, p);
-        return [r.rows, r];
-    } else {
-        const [rows, meta] = await pool.query(sql, params);
-        return [rows, meta];
-    }
-}
-
-// Testa conexão rápida
-async function testConnection() {
-    if (driver === 'pg') { await pool.query('select 1'); }
-    else { await pool.query('select 1'); }
-}
-
-// Verifica se tabela "users" existe
-async function usersTableExists() {
-    if (driver === 'pg') {
-        const [rows] = await query(`SELECT 1 FROM information_schema.tables WHERE table_name='users' LIMIT 1`);
-        return rows.length > 0;
-    } else {
-        const [rows] = await query(`SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='users' LIMIT 1`);
-        return rows.length > 0;
-    }
-}
-
-// Executa schema do arquivo (idempotente)
-async function applySchema() {
-    const file = (driver === 'pg') ? SCHEMA_PG : SCHEMA_MY;
-    const sql = fs.readFileSync(file, 'utf-8');
-    const chunks = sql.split(/;[\r\n]+/).map(s => s.trim()).filter(Boolean);
-    let i = 0;
-    for (const stmt of chunks) {
-        i++; step(`Aplicando schema (${i}/${chunks.length})...`);
-        await query(stmt);
-    }
-}
-
-// Cria Admin Master se não existir ninguém
-async function ensureAdminMaster() {
-    const [[rowCount]] = await query(`SELECT COUNT(*) as c FROM users`);
-    const c = rowCount.c || rowCount.C || rowCount.count || 0;
-    if (c > 0) return;
-    step('Criando usuário Admin Master padrão...');
-    const phone = String(SEED_ADMIN.phone).replace(/\D/g, '');
-    const hash = await bcrypt.hash(SEED_ADMIN.password, 10);
-    await query(`INSERT INTO users(phone, cpf, password_hash, first_name, last_name, role_key, status, created_at)
-               VALUES(?,?,?,?,?,'admin_master','active',?)`,
-        [phone, SEED_ADMIN.cpf, hash, 'Admin', 'Master', Date.now()]);
-}
-
-// ---- Bootstrap principal (chamado no server.js) ----
-export async function startBootstrap() {
-    if (bootstrap.running) return;
-    bootstrap.running = true; bootstrap.ready = false; bootstrap.error = null; bootstrap.steps.length = 0;
-
-    try {
-        step('Resolvendo configuração do banco...');
-        const cfg = resolveConfig();
-        if (!cfg) throw new Error('Configuração de banco não encontrada. Defina ENV ou edite DIRECT_DB_CONFIG em db.js.');
-
-        step(`Iniciando pool (${cfg.type})...`);
-        initDB(cfg);
-
-        step('Testando conexão...');
-        await testConnection();
-
-        const exists = await usersTableExists();
-        if (!exists) {
-            step('Tabelas ausentes. Aplicando schema...');
-            await applySchema();
-        } else {
-            step('Tabelas existentes detectadas.');
-        }
-
-        await ensureAdminMaster();
-
-        bootstrap.ready = true; bootstrap.running = false;
-        step('Pronto! Banco inicializado.');
-    } catch (e) {
-        bootstrap.error = e.message || String(e);
-        bootstrap.running = false; bootstrap.ready = false;
-        step('Falhou: ' + bootstrap.error);
-    }
-}
-
-export function getBootstrapStatus() {
-    return {
-        running: bootstrap.running,
-        ready: bootstrap.ready,
-        error: bootstrap.error,
-        steps: [...bootstrap.steps]
-    };
-}
-
-export async function retryBootstrap() {
-    if (bootstrap.running) return getBootstrapStatus();
-    // encerra pool antigo (se houver)
-    try { if (pool && driver === 'pg') await pool.end(); } catch { }
-    try { if (pool && driver === 'mysql') await pool.end(); } catch { }
-    pool = null; driver = null;
-    await startBootstrap();
-    return getBootstrapStatus();
+    return pool.query(text, params);
 }
