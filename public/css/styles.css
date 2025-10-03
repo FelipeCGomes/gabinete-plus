@@ -133,3 +133,24 @@ button{ cursor:pointer; }
 /* about/contact */
 .center-hero{ text-align:center; }
 .center-hero img{ width:140px; height:140px; border-radius:50%; object-fit:cover; border:2px solid rgba(255,255,255,.2); margin:0 auto 10px; }
+/* === Bootstrap Overlay (status do DB) === */
+#bootstrapOverlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,.5);
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(2px);
+}
+#bootstrapOverlay .bo-wrap{ width: min(92vw, 640px); }
+#bootstrapOverlay .bo-card{
+  background: #fff; border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  border: 1px solid rgba(0,0,0,.08);
+}
+#bootstrapOverlay h3{ margin: 0 0 12px; color: var(--brand-primary, #0b2240); }
+#bootstrapOverlay .bo-log{
+  height: 220px; overflow: auto; background: #f8fafc; border: 1px solid #e5e7eb;
+  border-radius: 8px; padding: 10px; font-size: 14px;
+}
+#bootstrapOverlay .bo-error{
+  margin-top: 10px; color: #b91c1c; font-weight: 600;
+}
+#bootstrapOverlay .bo-actions{ display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
