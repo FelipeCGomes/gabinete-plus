@@ -20,13 +20,13 @@ let driver = null; // 'pg' | 'mysql'
 // ===== CONFIG DIRETA (edite aqui se não usar .env) =====
 const DIRECT_DB_CONFIG = {
     // Exemplo Postgres:
-    // type: 'postgres',
-    // host: 'localhost',
-    // port: 5432,
-    // user: 'gabinete',
-    // password: 'senha',
-    // database: 'gabinete_plus',
-    // ssl: false,
+    type: 'postgres',
+    host: 'dpg-d3g18o1r0fns73dm6p60-a.internal',
+    port: 5432,
+    user: 'gabinete_plus_user',
+    password: 'ibyKDwL2iot9ASwhywoK3YmqssTINmai',
+    database: 'gabinete_plus_qz12',
+    ssl: true,
 
     // Exemplo MySQL:
     // type: 'mysql',
