@@ -36,6 +36,7 @@ const DIRECT_DB_CONFIG = {
     // password: 'senha',
     // database: 'gabinete_plus',
     // ssl: false,
+
 };
 
 // ===== ADMIN MASTER SEED =====
